@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Allowance - a PayPal wallet with rules for AI agents</title>
+<style>
+  :root { --bg:#f3f5f9; --card:#fff; --ink:#151b2b; --muted:#667085; --line:#dfe3ec; --brand:#0b5fff;
+          --ok:#12805c; --ok-bg:#e3f5ee; --warn:#a15c00; --warn-bg:#fdf0d8; --bad:#b42318; --bad-bg:#fde8e6; --ai:#5b3fd6; --ai-bg:#f0ecff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  header { background:#0d1730; color:#fff; padding:20px 16px; }
+  header .in, main { max-width:1100px; margin:0 auto; }
+  header h1 { margin:0; font-size:26px; letter-spacing:-.02em; }
+  header p { margin:4px 0 0; color:#c5d0e6; max-width:72ch; }
+  .pill { display:inline-block; font-size:12px; padding:2px 8px; border-radius:99px; background:#ffffff22; margin-left:8px; vertical-align:middle; }
+  main { padding:20px 16px 60px; display:grid; gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; min-width:0; }
+  h2 { margin:0 0 10px; font-size:18px; }
+  .muted { color:var(--muted); font-size:14px; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  @media (max-width:860px){ .cols{ grid-template-columns:1fr; } .stats{ grid-template-columns:1fr 1fr; } }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; }
+  .stat b { display:block; font-size:26px; letter-spacing:-.02em; }
+  button { font:inherit; border:1px solid var(--line); background:#fff; color:var(--ink); padding:8px 14px; border-radius:9px; cursor:pointer; }
+  button.primary { background:var(--brand); color:#fff; border-color:var(--brand); font-weight:600; }
+  button.ai { background:var(--ai); color:#fff; border-color:var(--ai); font-weight:600; }
+  button.small { padding:4px 10px; font-size:13px; }
+  button:disabled { opacity:.5; cursor:wait; }
+  input, textarea { font:inherit; width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:9px; background:#fff; color:var(--ink); }
+  textarea { min-height:74px; }
+  label { font-size:13px; color:var(--muted); display:block; margin:8px 0 3px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; }
+  .row > * { flex:1; min-width:130px; }
+  .row.tight > * { flex:none; min-width:0; }
+  .chip { display:inline-block; font-size:12px; font-weight:600; padding:2px 9px; border-radius:99px; white-space:nowrap; }
+  .chip.paid { background:var(--ok-bg); color:var(--ok); } .chip.pending_approval, .chip.processing { background:var(--warn-bg); color:var(--warn); }
+  .chip.blocked, .chip.rejected, .chip.failed { background:var(--bad-bg); color:var(--bad); }
+  .tx { border-top:1px solid var(--line); padding:11px 0; }
+  .tx:first-child { border-top:0; }
+  .tx .top { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  .steps { max-height:420px; overflow:auto; font-size:14px; }
+  .step { padding:7px 10px; border-radius:9px; margin-top:6px; overflow-wrap:anywhere; }
+  .step.thought { background:var(--ai-bg); } .step.tool { background:#eef3ff; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; }
+  .step.result { background:#f5f6f8; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; color:#475467; }
+  .step.final { background:var(--ok-bg); font-weight:500; white-space:pre-wrap; } .step.error { background:var(--bad-bg); color:var(--bad); }
+  .step small { display:block; font:600 11px system-ui; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+  .err { background:var(--bad-bg); color:var(--bad); border:1px solid #f5c2bd; padding:10px 12px; border-radius:10px; display:none; }
+</style>
+</head>
+<body>
+<header><div class="in">
+  <h1>Allowance <span class="pill" id="mode"></span></h1>
+  <p>Give your AI agent a debit card with rules. The agent asks, the wallet decides: pay through PayPal, block, or hold for your approval. Every decision is logged.</p>
+</div></header>
+<main>
+  <div class="err" id="err"></div>
+  <div class="stats" id="stats"></div>
+  <div class="cols">
+    <div class="card"><h2>Agent</h2>
+      <label for="task">Task for the built-in shopping agent</label>
+      <textarea id="task">Restock the office: get the cheapest box of printer paper on the marketplace and renew our cloud hosting for one month.</textarea>
+      <div class="row tight" style="margin-top:8px"><button class="ai" id="runb" onclick="runAgent(this)">Run agent</button><span class="muted" id="aiinfo"></span></div>
+      <div class="steps" id="steps"></div>
+      <p class="muted" style="margin-bottom:0">Any external agent can use the same wallet over MCP: see the README.</p>
+    </div>
+    <div class="card"><h2>Rules</h2>
+      <div class="row"><div><label for="ppl">Per-purchase limit (above this, I approve)</label><input id="ppl" type="number" min="0"></div>
+        <div><label for="daily">Daily budget</label><input id="daily" type="number" min="0"></div></div>
+      <label>Approved merchants and their PayPal sandbox emails</label>
+      <div id="merchants"></div>
+      <div class="row tight" style="margin-top:10px"><button class="primary" onclick="savePolicy(this)">Save rules</button></div>
+      <p class="muted" style="margin-bottom:0">Rules are enforced by the wallet's code, not by the agent's prompt.</p>
+    </div>
+  </div>
+  <div class="card"><div class="row tight" style="justify-content:space-between"><h2 style="margin:0">Ledger</h2>
+    <span><button class="small" onclick="act(this, () => api('POST','/api/refresh'))">Refresh PayPal status</button>
+    <button class="small" onclick="if(confirm('Clear the ledger?'))act(this, () => api('POST','/api/reset'))">Clear</button></span></div>
+    <div id="ledger"></div></div>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let S = null, policyLoaded = false;
+async function api(method, url, body) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function showErr(m) { const e = $('#err'); e.textContent = m || ''; e.style.display = m ? 'block' : 'none'; }
+async function act(btn, fn) {
+  showErr(''); if (btn) btn.disabled = true;
+  try { await fn(); } catch (e) { showErr(e.message); }
+  if (btn) btn.disabled = false;
+  await load();
+}
+const LABEL = { processing: 'Paying via PayPal...', paid: 'Paid via PayPal', blocked: 'Blocked', pending_approval: 'Needs your approval', rejected: 'Rejected', failed: 'Payment failed' };
+const STEP = { thought: 'Agent thinks', tool: 'Agent calls wallet', result: 'Wallet replies', final: 'Agent report', error: 'Error' };
+async function load() {
+  S = await api('GET', '/api/state');
+  const f = (n) => new Intl.NumberFormat('en-US', { style: 'currency', currency: S.policy.currency }).format(n);
+  $('#mode').textContent = S.mock ? 'offline mock' : 'PayPal sandbox';
+  $('#aiinfo').textContent = `${S.ai.provider} / ${S.ai.model}`;
+  const b = S.budget;
+  $('#stats').innerHTML = `<div class="stat"><span class="muted">Left today</span><b>${f(b.remainingToday)}</b></div>
+    <div class="stat"><span class="muted">Spent today</span><b>${f(b.spentToday)}</b></div>
+    <div class="stat"><span class="muted">Waiting for approval</span><b>${f(b.awaitingApproval)}</b></div>
+    <div class="stat"><span class="muted">Per-purchase limit</span><b>${f(b.perPurchaseLimit)}</b></div>`;
+  if (!policyLoaded) {
+    $('#ppl').value = S.policy.perPurchaseLimit; $('#daily').value = S.policy.dailyBudget;
+    $('#merchants').innerHTML = S.policy.merchants.map((m) => `<div class="row" style="margin-top:6px"><div style="flex:1"><b>${esc(m.name)}</b><div class="muted">${esc(m.category)}</div></div><input style="flex:1.4" data-m="${esc(m.id)}" value="${esc(m.email)}" placeholder="merchant PayPal sandbox email" aria-label="${esc(m.name)} PayPal email"></div>`).join('');
+    policyLoaded = true;
+  }
+  $('#ledger').innerHTML = S.txs.map((t) => `<div class="tx"><div class="top"><div><b>${esc(t.item)}</b> <span class="muted">from ${esc(t.merchantName)}</span></div>
+      <div><b>${f(t.amount)}</b> <span class="chip ${t.status}">${LABEL[t.status]}</span></div></div>
+    <div class="muted">${esc(t.rule)}</div>
+    <div class="muted">Agent's reason: ${esc(t.reason) || 'none given'}${t.payoutBatchId ? ` &middot; PayPal payout batch ${esc(t.payoutBatchId)} (${esc(t.payoutStatus)})` : ''} &middot; ${new Date(t.at).toLocaleTimeString()}</div>
+    ${t.status === 'pending_approval' ? `<div class="row tight" style="margin-top:8px"><button class="primary small" onclick="act(this, () => api('POST','/api/purchases/${t.id}/approve'))">Approve and pay</button><button class="small" onclick="act(this, () => api('POST','/api/purchases/${t.id}/reject'))">Reject</button></div>` : ''}</div>`).join('')
+    || '<p class="muted">No purchase requests yet. Run the agent to see the wallet make decisions.</p>';
+  const run = S.runs[0];
+  const box = $('#steps'), atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  box.innerHTML = run ? run.steps.map((s) => `<div class="step ${s.kind}"><small>${STEP[s.kind]}</small>${esc(s.text)}</div>`).join('') + (run.status === 'running' ? '<div class="step"><small>Working...</small></div>' : '') : '';
+  if (atBottom) box.scrollTop = box.scrollHeight;
+  $('#runb').disabled = run?.status === 'running';
+}
+async function runAgent(btn) { await act(btn, () => api('POST', '/api/agent/run', { task: $('#task').value })); }
+async function savePolicy(btn) {
+  await act(btn, () => api('PUT', '/api/policy', { perPurchaseLimit: Number($('#ppl').value), dailyBudget: Number($('#daily').value),
+    merchants: [...document.querySelectorAll('[data-m]')].map((i) => ({ id: i.dataset.m, email: i.value })) }));
+}
+load().catch((e) => showErr(e.message));
+setInterval(() => load().catch(() => {}), 1500);
+</script>
+</body>
+</html>
