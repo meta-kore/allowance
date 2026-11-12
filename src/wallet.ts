@@ -3,15 +3,18 @@
 import { randomUUID } from 'node:crypto';
 import { makeStore } from './store.js';
 import { createPayout, getPayoutBatch, cancelPayoutItem } from './paypal.js';
+import { CHANNEL3, DEMO_DOMAINS, lookupOffer } from './channel3.js';
 
-export type Merchant = { id: string; name: string; email: string; category: string };
+// An approved merchant is a set of retailer domains that settle to one sandbox PayPal payee.
+// No order is placed with the retailer: the payout to the payee stands in for paying it.
+export type Merchant = { id: string; name: string; email: string; category: string; domains: string[] };
 export type Policy = { currency: string; perPurchaseLimit: number; dailyBudget: number; merchants: Merchant[] };
 // processing: PayPal accepted the payout but the item is not final yet.
 // paid: the item's transaction_status is SUCCESS, so the money reached the merchant.
 // returned: the item was UNCLAIMED (no PayPal account at that email); the wallet cancelled it and the money went back to the owner.
 // failed: PayPal refused or reversed the payment (FAILED, DENIED, BLOCKED, RETURNED, REFUNDED, REVERSED, or an API error).
 export type Tx = {
-  id: string; at: string; sku?: string; merchantId: string; merchantName: string; item: string; amount: number; reason: string;
+  id: string; at: string; sku?: string; productId?: string; domain?: string; buyUrl?: string; merchantId: string; merchantName: string; item: string; amount: number; reason: string;
   status: 'processing' | 'paid' | 'returned' | 'failed' | 'blocked' | 'pending_approval' | 'rejected';
   rule: string; payoutBatchId?: string; payoutStatus?: string; decidedAt?: string;
   payoutItemId?: string; transactionId?: string; transactionStatus?: string; outcome?: string;
@@ -22,21 +25,21 @@ export const store = makeStore<Db>('data/db.json', {
   policy: {
     currency: 'USD', perPurchaseLimit: 50, dailyBudget: 150,
     merchants: [
-      { id: 'papertrail', name: 'PaperTrail Office Supply', email: process.env.MERCHANT_EMAIL_PAPERTRAIL || '', category: 'office supplies' },
-      { id: 'cloudbox', name: 'CloudBox Hosting', email: process.env.MERCHANT_EMAIL_CLOUDBOX || '', category: 'software' },
+      { id: 'papertrail', name: 'PaperTrail Office Supply', email: process.env.MERCHANT_EMAIL_PAPERTRAIL || '', category: 'office supplies', domains: [] },
+      { id: 'cloudbox', name: 'CloudBox Hosting', email: process.env.MERCHANT_EMAIL_CLOUDBOX || '', category: 'software', domains: [] },
     ],
   },
   txs: [],
 });
 
-// A pretend marketplace for the demo agent to shop in. BargainBin is deliberately NOT an approved merchant.
-export const CATALOG = [
-  { sku: 'PT-PAPER', merchantId: 'papertrail', merchantName: 'PaperTrail Office Supply', item: 'Printer paper, box of 5 reams', price: 18 },
-  { sku: 'PT-TONER', merchantId: 'papertrail', merchantName: 'PaperTrail Office Supply', item: 'Black toner cartridge', price: 42 },
-  { sku: 'BB-PAPER', merchantId: 'bargainbin', merchantName: 'BargainBin Deals', item: 'Printer paper, box of 5 reams', price: 9 },
-  { sku: 'CB-HOST', merchantId: 'cloudbox', merchantName: 'CloudBox Hosting', item: 'Cloud hosting, 1 month', price: 60 },
-  { sku: 'CB-DOMAIN', merchantId: 'cloudbox', merchantName: 'CloudBox Hosting', item: 'Domain renewal, 1 year', price: 14 },
-];
+// Default approved retailers. With Channel3 these are real retailers that showed up in office-supply searches;
+// without a key they are the demo catalogue's own domains. Applied only to merchants that have no domains yet.
+const DEFAULT_DOMAINS: Record<string, string[]> = CHANNEL3 ? { papertrail: ['staples.com'], cloudbox: ['officedepot.com'] } : DEMO_DOMAINS;
+for (const m of store.get().policy.merchants) if (!Array.isArray(m.domains) || !m.domains.length) m.domains = [...(DEFAULT_DOMAINS[m.id] ?? [])];
+
+// Normalises what the owner types ("https://www.Staples.com/x") to a bare domain ("staples.com").
+export const normDomain = (d: string) => String(d || '').trim().toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '');
+const payeeFor = (domain: string) => store.get().policy.merchants.find((m) => m.domains.includes(normDomain(domain)));
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -51,7 +54,7 @@ export function budget() {
     currency: policy.currency, perPurchaseLimit: policy.perPurchaseLimit, dailyBudget: policy.dailyBudget,
     spentToday: spent, processingToday: processing, awaitingApproval: awaiting,
     remainingToday: Math.max(0, policy.dailyBudget - spent - processing - awaiting),
-    approvedMerchants: policy.merchants.map((m) => ({ id: m.id, name: m.name, category: m.category })),
+    approvedMerchants: policy.merchants.map((m) => ({ id: m.id, name: m.name, domains: m.domains })),
   };
 }
 
@@ -59,7 +62,7 @@ export function budget() {
 // The agent learns the merchant rule by being blocked; the wallet enforces it either way.
 export function agentBudget() {
   const { approvedMerchants, ...rest } = budget();
-  return { ...rest, merchantRule: 'Only merchants approved by the owner can be paid. The approved list is not shared with agents.' };
+  return { ...rest, merchantRule: 'Only retailers approved by the owner can be paid. The approved list is not shared with agents.' };
 }
 
 const FAILED = ['FAILED', 'BLOCKED', 'RETURNED', 'REFUNDED', 'REVERSED'];
@@ -109,7 +112,7 @@ async function pay(tx: Tx, merchant: Merchant) {
   try {
     const p = await createPayout({
       email: merchant.email, amount: tx.amount, currency: store.get().policy.currency,
-      subject: `Payment for ${tx.item}`, note: `Allowance wallet purchase ${tx.id}: ${tx.item}`, idempotencyKey: `allowance-${tx.id}`,
+      subject: `Payment for ${tx.item}`.slice(0, 200), note: `Allowance wallet purchase ${tx.id}: ${tx.item}${tx.domain ? ` from ${tx.domain}` : ''}`.slice(0, 900), idempotencyKey: `allowance-${tx.id}`,
     });
     tx.payoutBatchId = p.batchId; tx.payoutStatus = p.status; tx.outcome = 'PayPal accepted the payout; waiting for confirmation.';
   } catch (e: any) {
@@ -122,30 +125,34 @@ async function pay(tx: Tx, merchant: Merchant) {
   }
 }
 
-// The agent names a catalogue item by sku. Merchant, item and price always come from the catalogue,
-// never from the agent, so an agent cannot under-state a price to slip under a limit.
-export async function requestPurchase(input: { sku: string; reason: string }): Promise<Tx> {
+// The agent names a product and one of its offers by retailer domain. Price, title and retailer always come from
+// the offer cached by the last search, never from the agent, so an agent cannot under-state a price to slip under a limit.
+export async function requestPurchase(input: { productId: string; domain: string; reason: string }): Promise<Tx> {
   const { policy, txs } = store.get();
-  const sku = String(input?.sku || '').trim().toUpperCase();
-  const entry = CATALOG.find((c) => c.sku === sku);
-  const merchant = entry && policy.merchants.find((m) => m.id === entry.merchantId);
+  const productId = String(input?.productId || '').trim().slice(0, 80);
+  const domain = normDomain(input?.domain || '').slice(0, 100);
+  const { offer, problem } = lookupOffer(productId, domain);
+  const merchant = payeeFor(domain);
   const tx: Tx = {
-    id: randomUUID().slice(0, 8), at: new Date().toISOString(), sku: sku.slice(0, 40),
-    merchantId: entry?.merchantId || '', merchantName: entry?.merchantName || 'unknown',
-    item: entry?.item || `Unknown item "${sku.slice(0, 40)}"`, amount: entry?.price ?? 0,
+    id: randomUUID().slice(0, 8), at: new Date().toISOString(), productId, domain,
+    merchantId: merchant?.id || '', merchantName: merchant?.name || domain || 'unknown',
+    item: offer?.title || `Unknown product "${productId || '(none)'}"`, amount: offer?.price ?? 0, buyUrl: offer?.url || undefined,
     reason: String(input?.reason || '').slice(0, 300), status: 'blocked', rule: '',
   };
   const amount = tx.amount;
   const b = budget();
-  if (!entry) tx.rule = `Blocked: "${sku || '(none)'}" is not a catalogue sku. Use a sku from browse_catalog.`;
-  else if (!merchant) tx.rule = `Blocked: "${tx.merchantName}" is not on the approved merchant list.`;
-  else if (!merchant.email) tx.rule = `Blocked: no PayPal email is configured for ${merchant.name}.`;
+  if (problem === 'unknown') tx.rule = `Blocked: no offer from "${domain || '(none)'}" for product "${productId || '(none)'}" in recent search results. Search again with search_products and use a productId and domain from the results.`;
+  else if (problem === 'expired') tx.rule = 'Blocked: that offer is more than 30 minutes old, so its price may have changed. Search again with search_products.';
+  else if (offer!.currency !== policy.currency) tx.rule = `Blocked: the offer is priced in ${offer!.currency}, and this wallet only pays in ${policy.currency}.`;
+  else if (offer!.availability !== 'InStock') tx.rule = `Blocked: the offer from ${domain} is not in stock (${offer!.availability || 'unknown'}).`;
+  else if (!merchant) tx.rule = `Blocked: ${domain} is not an approved retailer.`;
+  else if (!merchant.email) tx.rule = `Blocked: no PayPal email is configured for the payee of ${domain}.`;
   else if (amount > b.remainingToday) tx.rule = `Blocked: ${amount.toFixed(2)} exceeds what is left of today's budget (${b.remainingToday.toFixed(2)}).`;
   else if (amount > policy.perPurchaseLimit) {
     tx.status = 'pending_approval';
     tx.rule = `Held: ${amount.toFixed(2)} is over the per-purchase limit of ${policy.perPurchaseLimit.toFixed(2)}, so the owner must approve it.`;
   } else {
-    tx.rule = 'Allowed: approved merchant, within the per-purchase limit and daily budget.';
+    tx.rule = 'Allowed: approved retailer, within the per-purchase limit and daily budget.';
     tx.status = 'processing';
   }
   // Record the decision before any await: the checks above and this write run without yielding,
@@ -160,7 +167,8 @@ export async function decide(id: string, approve: boolean): Promise<Tx> {
   const tx = txs.find((t) => t.id === id);
   if (!tx || tx.status !== 'pending_approval') throw new Error('That purchase is not waiting for approval.');
   const merchant = policy.merchants.find((m) => m.id === tx.merchantId);
-  if (approve && !merchant?.email) throw new Error('That merchant is no longer approved.');
+  if (approve && (!merchant?.email || (tx.domain && !merchant.domains.includes(tx.domain))))
+    throw new Error('That retailer is no longer approved, or its payee has no PayPal email.');
   tx.decidedAt = new Date().toISOString();
   if (!approve) { tx.status = 'rejected'; tx.rule = 'Rejected by the owner.'; store.save(); return tx; }
   // Leave pending_approval before awaiting PayPal, so a second click cannot pay the same purchase twice.
@@ -189,7 +197,7 @@ export async function refreshOne(t: Tx): Promise<Tx> {
 
 // What an agent is allowed to see about a transaction: no merchant emails, batch ids or PayPal references.
 export const publicTx = (t: Tx) => ({
-  id: t.id, status: t.status, merchant: t.merchantName, item: t.item, amount: t.amount,
+  id: t.id, status: t.status, retailer: t.domain || t.merchantName, item: t.item, amount: t.amount,
   explanation: [t.rule, agentOutcome(t)].filter(Boolean).join(' '),
 });
 

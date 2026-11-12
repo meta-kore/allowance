@@ -1,7 +1,8 @@
 // A small built-in shopping agent, used to demo the wallet. It can only act through the wallet's tools,
 // exactly like an external agent connected over MCP.
 import { chat, extractJson, type Msg } from './ai.js';
-import { CATALOG, agentBudget, requestPurchase, refreshOne, publicTx, store } from './wallet.js';
+import { agentBudget, requestPurchase, refreshOne, publicTx, store } from './wallet.js';
+import { searchProducts, agentProducts } from './channel3.js';
 
 export type Step = { kind: 'thought' | 'tool' | 'result' | 'final' | 'error'; text: string };
 export type Run = { id: number; task: string; status: 'running' | 'done' | 'error'; steps: Step[] };
@@ -14,8 +15,8 @@ Reply with ONLY one JSON object per turn, in one of these forms:
 
 Tools:
 - check_budget {}  -> spending limits and remaining budget
-- browse_catalog {"query": "<optional search text>"}  -> items for sale with merchant and price
-- request_purchase {"sku": "<sku from browse_catalog>", "reason": "<why this purchase serves the task>"}  -> the wallet's decision and the payment outcome. The wallet charges the catalogue price.
+- search_products {"query": "<what to look for>", "maxPrice": <optional number>}  -> products for sale, each with offers from retailers (domain and price in USD)
+- request_purchase {"productId": "<productId from search_products>", "domain": "<retailer domain of the offer you chose>", "reason": "<why this purchase serves the task>"}  -> the wallet's decision and the payment outcome. The wallet charges that offer's price; you cannot set the amount.
 - get_purchase_status {"id": "..."}  -> current status of an earlier request
 
 Purchase statuses:
@@ -26,7 +27,7 @@ Purchase statuses:
 - blocked: the wallet's rules refused it.
 - pending_approval: held for the owner to approve or reject.
 
-You cannot pay any other way. If the wallet blocks a purchase, do not retry the same thing: find a compliant alternative or report it. If a payment is returned or failed, do not retry it; report it. If a purchase is pending_approval, leave it with the owner and carry on. Finish with "final" when the task is done as far as the rules allow.
+You cannot pay any other way. If the wallet blocks a purchase, do not retry the same offer: find a compliant alternative or report it. If a payment is returned or failed, do not retry it; report it. If a purchase is pending_approval, leave it with the owner and carry on. Finish with "final" when the task is done as far as the rules allow.
 
 The final report must match the wallet's replies exactly:
 - Report only purchases you requested with request_purchase, each with the latest status and amount the wallet gave you. Call something paid only if the wallet said paid; say plainly when a payment is still processing, was returned or failed. Never describe something you chose not to request as blocked; if you skipped an option, say you skipped it and why.
@@ -35,12 +36,9 @@ The final report must match the wallet's replies exactly:
 async function callTool(tool: string, args: any): Promise<unknown> {
   switch (tool) {
     case 'check_budget': return agentBudget();
-    case 'browse_catalog': {
-      const q = String(args?.query || '').toLowerCase();
-      const words = q.split(/\s+/).filter(Boolean);
-      const hits = CATALOG.filter((c) => !words.length || words.some((w) => (c.item + ' ' + c.merchantName).toLowerCase().includes(w)));
-      return hits.length ? hits : CATALOG;
-    }
+    case 'search_products':
+      try { return agentProducts(await searchProducts(String(args?.query || ''), args?.maxPrice === undefined ? undefined : Number(args.maxPrice))); }
+      catch (e: any) { return { error: e.message }; }
     case 'request_purchase': return publicTx(await requestPurchase(args || {}));
     case 'get_purchase_status': {
       const t = store.get().txs.find((t) => t.id === args?.id);
@@ -55,13 +53,13 @@ export function startRun(task: string): Run {
   runs.push(run);
   (async () => {
     const msgs: Msg[] = [{ role: 'user', content: `Task: ${task}` }];
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 16; i++) {
       const reply = await chat(SYSTEM, msgs, 700);
       msgs.push({ role: 'assistant', content: reply });
       let j: any;
       try { j = extractJson<any>(reply); }
       catch {
-        // A malformed reply costs one of the 12 steps instead of ending the run.
+        // A malformed reply costs one of the 16 steps instead of ending the run.
         msgs.push({ role: 'user', content: 'That reply was not one valid JSON object. Resend it as exactly one valid JSON object and nothing else.' });
         continue;
       }
@@ -81,7 +79,7 @@ export function startRun(task: string): Run {
       run.steps.push({ kind: 'result', text: JSON.stringify(result) });
       msgs.push({ role: 'user', content: `Tool result: ${JSON.stringify(result)}` });
     }
-    run.steps.push({ kind: 'error', text: 'Stopped: the agent used all 12 steps without finishing.' }); run.status = 'error';
+    run.steps.push({ kind: 'error', text: 'Stopped: the agent used all 16 steps without finishing.' }); run.status = 'error';
   })().catch((e) => { run.steps.push({ kind: 'error', text: e.message }); run.status = 'error'; });
   return run;
 }

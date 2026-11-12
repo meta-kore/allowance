@@ -19,13 +19,19 @@ async function wallet(method: string, path: string, body?: unknown) {
 
 const server = new McpServer({ name: 'allowance-wallet', version: '1.0.0' });
 
-server.tool('check_budget', 'See the spending limits and how much of today\'s budget is left. Only owner-approved merchants can be paid; the list is not shared.', {}, () => wallet('GET', '/agent/budget'));
-server.tool('browse_catalog', 'List items for sale in the demo marketplace, with merchant and price.', {}, () => wallet('GET', '/agent/catalog'));
+server.tool('check_budget', 'See the spending limits and how much of today\'s budget is left. Only owner-approved retailers can be paid; the list is not shared.', {}, () => wallet('GET', '/agent/budget'));
+server.tool(
+  'search_products',
+  'Search real products for sale (via Channel3). Each product has offers from retailers, each with a domain and a USD price. Only in-stock USD offers are listed.',
+  { query: z.string().describe('What to look for, e.g. "printer paper"'), maxPrice: z.number().positive().optional().describe('Only offers at or below this price (USD)') },
+  ({ query, maxPrice }) => wallet('GET', `/agent/search?query=${encodeURIComponent(query)}${maxPrice ? `&maxPrice=${maxPrice}` : ''}`),
+);
 server.tool(
   'request_purchase',
-  'Ask the wallet to buy a catalogue item through PayPal. The wallet charges the catalogue price and replies with a status: paid (PayPal confirmed the merchant received it), processing (sent but not confirmed yet; not paid), returned (undeliverable; money went back to the owner), failed (PayPal did not complete it), blocked (refused by the rules), or pending_approval (the owner must approve). Do not retry returned or failed payments; report them.',
+  'Ask the wallet to buy one offer from search_products through PayPal. The wallet charges that offer\'s price (you cannot set the amount) and replies with a status: paid (PayPal confirmed the merchant received it), processing (sent but not confirmed yet; not paid), returned (undeliverable; money went back to the owner), failed (PayPal did not complete it), blocked (refused by the rules), or pending_approval (the owner must approve). Do not retry returned or failed payments; report them.',
   {
-    sku: z.string().describe('The sku of the item, from browse_catalog'),
+    productId: z.string().describe('The productId, from search_products'),
+    domain: z.string().describe('The retailer domain of the chosen offer, from search_products'),
     reason: z.string().describe('Why this purchase serves the task; shown to the owner'),
   },
   (args) => wallet('POST', '/agent/purchases', args),

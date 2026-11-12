@@ -46,12 +46,14 @@
   .step.result { background:#f5f6f8; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; color:#475467; }
   .step.final { background:var(--ok-bg); font-weight:500; white-space:pre-wrap; } .step.error { background:var(--bad-bg); color:var(--bad); }
   .step small { display:block; font:600 11px system-ui; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+  .payee { border:1px solid var(--line); border-radius:10px; padding:10px; margin-top:8px; }
+  .tx a { color:var(--brand); }
   .err { background:var(--bad-bg); color:var(--bad); border:1px solid #f5c2bd; padding:10px 12px; border-radius:10px; display:none; }
 </style>
 </head>
 <body>
 <header><div class="in">
-  <h1>Allowance <span class="pill" id="mode"></span></h1>
+  <h1>Allowance <span class="pill" id="mode"></span> <span class="pill" id="cat"></span></h1>
   <p>Give your AI agent a debit card with rules. The agent asks, the wallet decides: pay through PayPal, block, or hold for your approval. Every decision is logged.</p>
 </div></header>
 <main>
@@ -60,7 +62,7 @@
   <div class="cols">
     <div class="card"><h2>Agent</h2>
       <label for="task">Task for the built-in shopping agent</label>
-      <textarea id="task">Restock the office: get the cheapest box of printer paper on the marketplace and renew our cloud hosting for one month.</textarea>
+      <textarea id="task">Restock the office: buy the cheapest pack of printer paper you can find, and one 10-ream case of copy paper for the stockroom.</textarea>
       <div class="row tight" style="margin-top:8px"><button class="ai" id="runb" onclick="runAgent(this)">Run agent</button><span class="muted" id="aiinfo"></span></div>
       <div class="steps" id="steps"></div>
       <p class="muted" style="margin-bottom:0">Any external agent can use the same wallet over MCP: see the README.</p>
@@ -68,8 +70,9 @@
     <div class="card"><h2>Rules</h2>
       <div class="row"><div><label for="ppl">Per-purchase limit (above this, I approve)</label><input id="ppl" type="number" min="0"></div>
         <div><label for="daily">Daily budget</label><input id="daily" type="number" min="0"></div></div>
-      <label>Approved merchants and their PayPal sandbox emails</label>
+      <label>Approved retailers (comma-separated domains) and the sandbox PayPal payee each settles to</label>
       <div id="merchants"></div>
+      <p class="muted" id="payeenote" style="margin:6px 0 0"></p>
       <div class="row tight" style="margin-top:10px"><button class="primary" onclick="savePolicy(this)">Save rules</button></div>
       <p class="muted" style="margin-bottom:0">Rules are enforced by the wallet's code, not by the agent's prompt.</p>
     </div>
@@ -102,6 +105,7 @@ async function load() {
   S = await api('GET', '/api/state');
   const f = (n) => new Intl.NumberFormat('en-US', { style: 'currency', currency: S.policy.currency }).format(n);
   $('#mode').textContent = S.mock ? 'offline mock' : 'PayPal sandbox';
+  $('#cat').textContent = S.catalogue === 'channel3' ? 'Channel3 product search' : 'demo catalogue';
   $('#aiinfo').textContent = `${S.ai.provider} / ${S.ai.model}`;
   const b = S.budget;
   $('#stats').innerHTML = `<div class="stat"><span class="muted">Left today</span><b>${f(b.remainingToday)}</b></div>
@@ -110,10 +114,16 @@ async function load() {
     <div class="stat"><span class="muted">Per-purchase limit</span><b>${f(b.perPurchaseLimit)}</b></div>`;
   if (!policyLoaded) {
     $('#ppl').value = S.policy.perPurchaseLimit; $('#daily').value = S.policy.dailyBudget;
-    $('#merchants').innerHTML = S.policy.merchants.map((m) => `<div class="row" style="margin-top:6px"><div style="flex:1"><b>${esc(m.name)}</b><div class="muted">${esc(m.category)}</div></div><input style="flex:1.4" data-m="${esc(m.id)}" value="${esc(m.email)}" placeholder="merchant PayPal sandbox email" aria-label="${esc(m.name)} PayPal email"></div>`).join('');
+    $('#merchants').innerHTML = S.policy.merchants.map((m) => `<div class="payee" data-m="${esc(m.id)}">
+      <input data-f="domains" value="${esc((m.domains || []).join(', '))}" placeholder="retailer domains, e.g. staples.com" aria-label="Approved retailer domains for ${esc(m.name)}">
+      <div class="muted" style="margin:6px 0 3px">settles to sandbox payee <b>${esc(m.name)}</b></div>
+      <input data-f="email" value="${esc(m.email)}" placeholder="payee PayPal sandbox email" aria-label="${esc(m.name)} PayPal sandbox email"></div>`).join('');
+    $('#payeenote').textContent = S.catalogue === 'channel3'
+      ? 'Sandbox only: no order is placed with the retailer. The payout to the sandbox payee stands in for paying it.'
+      : 'Demo catalogue (no CHANNEL3_API_KEY): made-up products on .example domains.';
     policyLoaded = true;
   }
-  $('#ledger').innerHTML = S.txs.map((t) => `<div class="tx"><div class="top"><div><b>${esc(t.item)}</b> <span class="muted">from ${esc(t.merchantName)}</span></div>
+  $('#ledger').innerHTML = S.txs.map((t) => `<div class="tx"><div class="top"><div><b>${esc(t.item)}</b> <span class="muted">from ${esc(t.domain || t.merchantName)}${t.domain && t.merchantId && t.status !== 'blocked' ? `, settles to sandbox payee ${esc(t.merchantName)}` : ''}${t.buyUrl ? ` &middot; <a href="${esc(t.buyUrl)}" target="_blank" rel="noopener noreferrer">buy link</a>` : ''}</span></div>
       <div><b>${f(t.amount)}</b> <span class="chip ${t.status}">${LABEL[t.status]}</span></div></div>
     <div class="muted">${esc(t.rule)}${t.outcome ? ' ' + esc(t.outcome) : ''}</div>
     <div class="muted">Agent's reason: ${esc(t.reason) || 'none given'}${t.payoutBatchId ? ` &middot; PayPal batch ${esc(t.payoutBatchId)}${t.transactionStatus ? `, payment ${esc(t.transactionStatus)}` : ''}${t.transactionId ? `, transaction ${esc(t.transactionId)}` : ''}` : ''} &middot; ${new Date(t.at).toLocaleTimeString()}</div>
@@ -128,7 +138,8 @@ async function load() {
 async function runAgent(btn) { await act(btn, () => api('POST', '/api/agent/run', { task: $('#task').value })); }
 async function savePolicy(btn) {
   await act(btn, () => api('PUT', '/api/policy', { perPurchaseLimit: Number($('#ppl').value), dailyBudget: Number($('#daily').value),
-    merchants: [...document.querySelectorAll('[data-m]')].map((i) => ({ id: i.dataset.m, email: i.value })) }));
+    merchants: [...document.querySelectorAll('[data-m]')].map((d) => ({ id: d.dataset.m, email: d.querySelector('[data-f=email]').value,
+      domains: d.querySelector('[data-f=domains]').value.split(/[\s,]+/).filter(Boolean) })) }));
 }
 load().catch((e) => showErr(e.message));
 setInterval(() => load().catch(() => {}), 1500);

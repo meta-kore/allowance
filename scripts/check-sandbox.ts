@@ -24,6 +24,16 @@ for (const k of ['MERCHANT_EMAIL_PAPERTRAIL', 'MERCHANT_EMAIL_CLOUDBOX']) {
 const tok = process.env.AGENT_TOKEN;
 line(!!tok && tok !== 'dev-agent-token', tok && tok !== 'dev-agent-token' ? 'AGENT_TOKEN is set to a custom value' : 'AGENT_TOKEN is missing or still the default: change it before deploying');
 
+const c3 = process.env.CHANNEL3_API_KEY;
+if (!c3) line(false, 'CHANNEL3_API_KEY missing from .env: the agent will shop the demo catalogue instead of real products');
+else {
+  try {
+    const { searchProducts } = await import('../src/channel3.js');
+    const ps = await searchProducts('printer paper', undefined, 3);
+    line(ps.length > 0, `Channel3 live search returned ${ps.length} product(s) with in-stock USD offers`);
+  } catch (e: any) { line(false, e.message); }
+}
+
 const key = process.env.AI_API_KEY;
 line(!!key, key ? `AI key set for provider "${process.env.AI_PROVIDER || 'anthropic'}"` : 'AI_API_KEY missing from .env');
 if (key) {
