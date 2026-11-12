@@ -4,7 +4,11 @@ Allowance is a PayPal spending wallet with rules for AI agents, built for the Pa
 
 ## Before anything else
 
-`src/paypal.ts` and `src/ai.ts` here are the untested originals. If they were fixed in the Kitty repo during its sandbox testing, port those fixes here first (compare the files; do not blindly overwrite, Kitty's `paypal.ts` may have diverged). Allowance only uses `createPayout` and `getPayout` from `paypal.ts`.
+`src/paypal.ts` and `src/ai.ts` here are the untested originals. If they were fixed in the Kitty repo during its sandbox testing, port those fixes here first (compare the files; do not blindly overwrite, Kitty's `paypal.ts` may have diverged). Allowance only uses the Payouts functions from `paypal.ts`: `createPayout`, `getPayoutBatch` and `cancelPayoutItem`.
+
+## Payment states
+
+A purchase is `paid` only when its payout item's `transaction_status` is `SUCCESS` (a batch can be SUCCESS while its item is UNCLAIMED). `settle()` in `src/wallet.ts` maps the item: SUCCESS → `paid`; UNCLAIMED → cancel the item, then `returned`; FAILED, BLOCKED, RETURNED, REFUNDED, REVERSED or a DENIED/CANCELED batch → `failed`; PENDING, ONHOLD → stays `processing`. `pay()` polls for about 15 s after creating the payout; `refreshPayouts()` and `get_purchase_status` settle the rest. Budget: `paid` is spent; `processing` and `pending_approval` hold budget; `returned`, `failed`, `blocked` and `rejected` cost nothing.
 
 ## Commands
 
@@ -34,16 +38,15 @@ Allowance is a PayPal spending wallet with rules for AI agents, built for the Pa
 2. `npm start`, open the dashboard, confirm both merchants show an email under Rules.
 3. Click "Run agent" with the default task. Expected ledger, newest first:
    - Cloud hosting, 60.00, "Needs your approval" (over the 50.00 per-purchase limit).
-   - Printer paper from PaperTrail, 18.00, "Paid via PayPal" with a payout batch id.
+   - Printer paper from PaperTrail, 18.00, "Paid via PayPal" with a batch id, "payment SUCCESS" and a transaction id.
    - Printer paper from BargainBin, 9.00, "Blocked" (not an approved merchant). Agents do not see the approved-merchant list (`agentBudget` in `src/wallet.ts` omits it), so the agent usually tries the cheaper BargainBin paper first. If it does not, adjust the default task or the catalogue, but do not script the agent's choices.
-4. Click "Approve and pay" on the hosting purchase. Expect "Paid via PayPal" and a batch id. Then "Refresh PayPal status"; expect SUCCESS.
+4. Click "Approve and pay" on the hosting purchase. Expect "Paid via PayPal", "payment SUCCESS" and a transaction id within about 15 seconds. If it still says "Waiting for PayPal...", click "Refresh PayPal status".
 5. Log in to the two merchant sandbox accounts and confirm 18.00 and 60.00 arrived.
 6. Budget test: lower the daily budget to 80 on the dashboard, clear nothing, run the agent again. Expect a "Blocked" for exceeding today's budget.
 7. MCP test: with the wallet running, connect the MCP server from an MCP client (config in README), call `check_budget`, then `request_purchase` for the 14.00 domain renewal. Expect "paid" and a new ledger row.
 
 ## Known unknowns (not yet verified against the real sandbox)
 
-- The Payouts request shape in `createPayout` and the status values returned.
 - Whether a payout to a sandbox **business** account email settles the same way as to a personal one.
 - How reliably the chosen model sticks to the one-JSON-object-per-turn protocol in `src/agent.ts` (`extractJson` tolerates code fences and stray prose; a model that ignores the format will hit the 12-step cap).
 - Agent behaviour varies between runs. Do several runs before recording the video.

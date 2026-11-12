@@ -4,9 +4,11 @@ AI agents can now find what to buy. Letting them actually pay is the frightening
 
 **Allowance gives an agent a debit card with rules.** The agent never holds credentials. It asks the wallet to buy something, and the wallet decides:
 
-- **Pay**: approved merchant, under the per-purchase limit, within today's budget. Paid through PayPal immediately.
+- **Pay**: approved merchant, under the per-purchase limit, within today's budget. Sent through PayPal immediately.
 - **Hold**: over the per-purchase limit. Waits for the owner to approve or reject on the dashboard.
 - **Block**: merchant not approved, or the daily budget would be exceeded.
+
+A purchase only counts as **paid** when PayPal confirms the merchant received the money. If the merchant's PayPal email has no account, PayPal leaves the payment unclaimed; the wallet cancels it so the money comes straight back to the owner, and records the purchase as **returned**. Payments PayPal refuses or reverses are recorded as **failed**, with PayPal's reason. Payments not confirmed yet stay **processing** until a later check settles them.
 
 Every request, decision, reason and PayPal reference lands in a ledger the owner can read.
 
@@ -24,7 +26,8 @@ Built for the PayPal AI Hackathon 2026.
 | PayPal API | Used for |
 |---|---|
 | Payouts: create | Paying the merchant from the owner's PayPal balance when the wallet allows a purchase or the owner approves one |
-| Payouts: get | Settlement status in the ledger |
+| Payouts: show batch details | Each payment's own `transaction_status` and transaction id, so a purchase is marked paid only on `SUCCESS` |
+| Payouts: cancel unclaimed item | Returning money sent to an email with no PayPal account to the owner at once, instead of after PayPal's 30-day automatic refund |
 
 An agent cannot click through a PayPal checkout, so the wallet pays merchants server-side from the owner's balance using Payouts. The owner funds one PayPal account; the agent only ever sees a budget. All calls go to the PayPal **sandbox**. The code cannot point at live PayPal.
 
@@ -57,9 +60,10 @@ In `.env`:
 2. Click **Run agent** with the default task (get the cheapest printer paper on the marketplace, renew hosting).
 3. Watch the outcomes:
    - The cheapest paper is from BargainBin, which is not approved: **blocked**. Agents are told that only approved merchants can be paid, but not which ones, so they learn the rule from the wallet.
-   - The agent buys from PaperTrail at $18: **paid via PayPal**.
+   - The agent buys from PaperTrail at $18: **paid via PayPal**, with PayPal's transaction id, once PayPal confirms delivery (a few seconds).
    - Hosting is $60, over the $50 per-purchase limit: **needs your approval**.
 4. Click **Approve and pay** on the hosting purchase. Log in to the merchant sandbox accounts to see the money arrive.
+5. Optional: change a merchant's email on the dashboard to one with no sandbox account and buy from it. The purchase ends as **returned to you**, and the owner's balance gets the money back.
 
 ## Use it from your own agent (MCP)
 
@@ -97,7 +101,8 @@ public/         Owner dashboard
 - The owner dashboard has no login in this demo; put it behind authentication before real use.
 - One wallet and one agent token per deployment, stored in a local JSON file.
 - The marketplace catalogue is a fixed demo list. The agent names an item by sku and the wallet charges the catalogue price, so an agent cannot under-state a price to dodge a limit.
-- `PAYPAL_MOCK=1` runs the app without PayPal for offline development. It is not used in the demo.
+- Payment confirmation is checked when a purchase is made (for about 15 seconds), when the agent asks for its status, and when the owner clicks **Refresh PayPal status**. There is no background poller, so a payment PayPal confirms later shows as processing until one of those happens.
+- `PAYPAL_MOCK=1` runs the app without PayPal for offline development. It is not used in the demo. In mock mode, a merchant email containing `unclaimed`, `failed` or `pending` produces that payment outcome.
 
 ## AI tools used
 

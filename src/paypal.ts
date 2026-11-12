@@ -112,12 +112,35 @@ export function mockPayInvoice(id: string): boolean {
 }
 
 // ---------- Payouts ----------
+// A batch being accepted (even batch_status SUCCESS) does not mean the money arrived: each item has its
+// own transaction_status (SUCCESS, FAILED, PENDING, UNCLAIMED, RETURNED, ONHOLD, BLOCKED, REFUNDED, REVERSED).
 export type PayoutInfo = { batchId: string; status: string };
+export type PayoutItem = { payoutItemId: string; transactionStatus: string; transactionId?: string; error?: string };
+export type PayoutBatch = { batchId: string; status: string; items: PayoutItem[] };
+
+// Mock mode: a receiver email containing "unclaimed", "failed" or "pending" yields that item outcome.
+const mockBatches = new Map<string, PayoutBatch>();
+
+const toItem = (i: any): PayoutItem => ({
+  payoutItemId: i.payout_item_id,
+  transactionStatus: i.transaction_status || 'PENDING',
+  transactionId: i.transaction_id || undefined,
+  error: i.errors ? [i.errors.name, i.errors.message].filter(Boolean).join(': ') : undefined,
+});
 
 export async function createPayout(o: {
   email: string; amount: number; currency: string; note: string; subject: string; idempotencyKey: string;
 }): Promise<PayoutInfo> {
-  if (MOCK) return { batchId: 'MOCKBATCH' + randomUUID().slice(0, 8).toUpperCase(), status: 'SUCCESS' };
+  if (MOCK) {
+    const batchId = 'MOCKBATCH' + randomUUID().slice(0, 8).toUpperCase();
+    const e = o.email.toLowerCase();
+    const item: PayoutItem = { payoutItemId: 'MOCKITEM' + randomUUID().slice(0, 8).toUpperCase(), transactionStatus: 'SUCCESS', transactionId: 'MOCKTX' + randomUUID().slice(0, 8).toUpperCase() };
+    if (e.includes('unclaimed')) Object.assign(item, { transactionStatus: 'UNCLAIMED', error: 'RECEIVER_UNREGISTERED: The recipient for this payout does not have an account.' });
+    else if (e.includes('failed')) Object.assign(item, { transactionStatus: 'FAILED', transactionId: undefined, error: 'RECEIVER_ACCOUNT_LOCKED: The receiver account is locked.' });
+    else if (e.includes('pending')) Object.assign(item, { transactionStatus: 'PENDING', transactionId: undefined });
+    mockBatches.set(batchId, { batchId, status: 'SUCCESS', items: [item] });
+    return { batchId, status: 'PENDING' };
+  }
   const r = await pp('POST', '/v1/payments/payouts', {
     sender_batch_header: { sender_batch_id: o.idempotencyKey, email_subject: o.subject, email_message: o.note },
     items: [{
@@ -131,8 +154,29 @@ export async function createPayout(o: {
   return { batchId: r.batch_header.payout_batch_id, status: r.batch_header.batch_status };
 }
 
-export async function getPayout(batchId: string): Promise<PayoutInfo> {
-  if (MOCK) return { batchId, status: 'SUCCESS' };
-  const r = await pp('GET', `/v1/payments/payouts/${batchId}`);
-  return { batchId, status: r.batch_header.batch_status };
+// GET /v1/payments/payouts/{payout_batch_id}: the batch status plus every item's transaction_status.
+export async function getPayoutBatch(batchId: string): Promise<PayoutBatch> {
+  if (MOCK) {
+    const b = mockBatches.get(batchId);
+    if (!b) throw new Error(`Mock payout batch ${batchId} not found`);
+    return { ...b, items: b.items.map((i) => ({ ...i })) };
+  }
+  const r = await pp('GET', `/v1/payments/payouts/${encodeURIComponent(batchId)}`);
+  return { batchId, status: r.batch_header?.batch_status || 'PENDING', items: (r.items || []).map(toItem) };
+}
+
+// POST /v1/payments/payouts-item/{payout_item_id}/cancel: only UNCLAIMED items can be cancelled.
+// The money goes back to the sender and the item becomes RETURNED.
+export async function cancelPayoutItem(payoutItemId: string): Promise<PayoutItem> {
+  if (MOCK) {
+    for (const b of mockBatches.values()) {
+      const i = b.items.find((x) => x.payoutItemId === payoutItemId);
+      if (!i) continue;
+      if (i.transactionStatus !== 'UNCLAIMED') throw new Error(`Mock payout item ${payoutItemId} is ${i.transactionStatus}, not UNCLAIMED`);
+      i.transactionStatus = 'RETURNED';
+      return { ...i };
+    }
+    throw new Error(`Mock payout item ${payoutItemId} not found`);
+  }
+  return toItem(await pp('POST', `/v1/payments/payouts-item/${encodeURIComponent(payoutItemId)}/cancel`));
 }

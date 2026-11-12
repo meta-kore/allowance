@@ -1,7 +1,7 @@
 // A small built-in shopping agent, used to demo the wallet. It can only act through the wallet's tools,
 // exactly like an external agent connected over MCP.
 import { chat, extractJson, type Msg } from './ai.js';
-import { CATALOG, agentBudget, requestPurchase, publicTx, store } from './wallet.js';
+import { CATALOG, agentBudget, requestPurchase, refreshOne, publicTx, store } from './wallet.js';
 
 export type Step = { kind: 'thought' | 'tool' | 'result' | 'final' | 'error'; text: string };
 export type Run = { id: number; task: string; status: 'running' | 'done' | 'error'; steps: Step[] };
@@ -15,13 +15,21 @@ Reply with ONLY one JSON object per turn, in one of these forms:
 Tools:
 - check_budget {}  -> spending limits and remaining budget
 - browse_catalog {"query": "<optional search text>"}  -> items for sale with merchant and price
-- request_purchase {"sku": "<sku from browse_catalog>", "reason": "<why this purchase serves the task>"}  -> the wallet's decision: paid, blocked or pending_approval. The wallet charges the catalogue price.
+- request_purchase {"sku": "<sku from browse_catalog>", "reason": "<why this purchase serves the task>"}  -> the wallet's decision and the payment outcome. The wallet charges the catalogue price.
 - get_purchase_status {"id": "..."}  -> current status of an earlier request
 
-You cannot pay any other way. If the wallet blocks a purchase, do not retry the same thing: find a compliant alternative or report it. If a purchase is pending_approval, leave it with the owner and carry on. Finish with "final" when the task is done as far as the rules allow.
+Purchase statuses:
+- paid: PayPal confirmed the merchant received the money.
+- processing: sent to PayPal but not confirmed yet. It is NOT paid. You may check it once more with get_purchase_status before finishing.
+- returned: the payment could not be delivered, so the money went back to the owner. Nothing was bought.
+- failed: PayPal did not complete the payment. Nothing was bought.
+- blocked: the wallet's rules refused it.
+- pending_approval: held for the owner to approve or reject.
+
+You cannot pay any other way. If the wallet blocks a purchase, do not retry the same thing: find a compliant alternative or report it. If a payment is returned or failed, do not retry it; report it. If a purchase is pending_approval, leave it with the owner and carry on. Finish with "final" when the task is done as far as the rules allow.
 
 The final report must match the wallet's replies exactly:
-- List as paid, waiting for approval or blocked only purchases you requested with request_purchase, using the status and amount the wallet returned. Never describe something you chose not to request as blocked; if you skipped an option, say you skipped it and why.
+- Report only purchases you requested with request_purchase, each with the latest status and amount the wallet gave you. Call something paid only if the wallet said paid; say plainly when a payment is still processing, was returned or failed. Never describe something you chose not to request as blocked; if you skipped an option, say you skipped it and why.
 - Do not work out the remaining budget yourself. If you mention it, call check_budget just before finishing and quote its remainingToday.`;
 
 async function callTool(tool: string, args: any): Promise<unknown> {
@@ -36,7 +44,7 @@ async function callTool(tool: string, args: any): Promise<unknown> {
     case 'request_purchase': return publicTx(await requestPurchase(args || {}));
     case 'get_purchase_status': {
       const t = store.get().txs.find((t) => t.id === args?.id);
-      return t ? publicTx(t) : { error: 'No purchase with that id' };
+      return t ? publicTx(await refreshOne(t)) : { error: 'No purchase with that id' };
     }
     default: return { error: `Unknown tool "${tool}"` };
   }

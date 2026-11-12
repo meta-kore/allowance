@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { MOCK } from './paypal.js';
 import { aiInfo } from './ai.js';
-import { store, CATALOG, budget, agentBudget, requestPurchase, decide, refreshPayouts, publicTx } from './wallet.js';
+import { store, CATALOG, budget, agentBudget, requestPurchase, decide, refreshPayouts, refreshOne, publicTx } from './wallet.js';
 import { runs, startRun } from './agent.js';
 
 const app = express();
@@ -20,10 +20,10 @@ app.get('/agent/budget', agentOnly, (_req, res) => res.json(agentBudget()));
 app.get('/agent/catalog', agentOnly, (_req, res) => res.json(CATALOG));
 app.post('/agent/purchases', agentOnly, wrap(async (req, res) => res.json(publicTx(await requestPurchase(req.body)))));
 app.get('/agent/purchases', agentOnly, (_req, res) => res.json(store.get().txs.slice(0, 25).map(publicTx)));
-app.get('/agent/purchases/:id', agentOnly, (req, res) => {
+app.get('/agent/purchases/:id', agentOnly, wrap(async (req, res) => {
   const t = store.get().txs.find((t) => t.id === req.params.id);
-  t ? res.json(publicTx(t)) : res.status(404).json({ error: 'No purchase with that id' });
-});
+  t ? res.json(publicTx(await refreshOne(t))) : res.status(404).json({ error: 'No purchase with that id' });
+}));
 
 // ---------- Owner API (the human). In this demo the dashboard is unauthenticated: put it behind a login before real use. ----------
 app.get('/api/state', (_req, res) => res.json({ ...store.get(), budget: budget(), runs: runs.slice(-1), mock: MOCK, ai: aiInfo(), catalog: CATALOG }));

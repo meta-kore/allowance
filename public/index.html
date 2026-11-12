@@ -36,7 +36,7 @@
   .row.tight > * { flex:none; min-width:0; }
   .chip { display:inline-block; font-size:12px; font-weight:600; padding:2px 9px; border-radius:99px; white-space:nowrap; }
   .chip.paid { background:var(--ok-bg); color:var(--ok); } .chip.pending_approval, .chip.processing { background:var(--warn-bg); color:var(--warn); }
-  .chip.blocked, .chip.rejected, .chip.failed { background:var(--bad-bg); color:var(--bad); }
+  .chip.blocked, .chip.rejected, .chip.failed, .chip.returned { background:var(--bad-bg); color:var(--bad); }
   .tx { border-top:1px solid var(--line); padding:11px 0; }
   .tx:first-child { border-top:0; }
   .tx .top { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; }
@@ -96,7 +96,7 @@ async function act(btn, fn) {
   if (btn) btn.disabled = false;
   await load();
 }
-const LABEL = { processing: 'Paying via PayPal...', paid: 'Paid via PayPal', blocked: 'Blocked', pending_approval: 'Needs your approval', rejected: 'Rejected', failed: 'Payment failed' };
+const LABEL = { processing: 'Waiting for PayPal...', paid: 'Paid via PayPal', returned: 'Returned to you', blocked: 'Blocked', pending_approval: 'Needs your approval', rejected: 'Rejected', failed: 'Payment failed' };
 const STEP = { thought: 'Agent thinks', tool: 'Agent calls wallet', result: 'Wallet replies', final: 'Agent report', error: 'Error' };
 async function load() {
   S = await api('GET', '/api/state');
@@ -105,7 +105,7 @@ async function load() {
   $('#aiinfo').textContent = `${S.ai.provider} / ${S.ai.model}`;
   const b = S.budget;
   $('#stats').innerHTML = `<div class="stat"><span class="muted">Left today</span><b>${f(b.remainingToday)}</b></div>
-    <div class="stat"><span class="muted">Spent today</span><b>${f(b.spentToday)}</b></div>
+    <div class="stat"><span class="muted">Spent today</span><b>${f(b.spentToday)}</b>${b.processingToday ? `<span class="muted">+ ${f(b.processingToday)} waiting for PayPal</span>` : ''}</div>
     <div class="stat"><span class="muted">Waiting for approval</span><b>${f(b.awaitingApproval)}</b></div>
     <div class="stat"><span class="muted">Per-purchase limit</span><b>${f(b.perPurchaseLimit)}</b></div>`;
   if (!policyLoaded) {
@@ -115,8 +115,8 @@ async function load() {
   }
   $('#ledger').innerHTML = S.txs.map((t) => `<div class="tx"><div class="top"><div><b>${esc(t.item)}</b> <span class="muted">from ${esc(t.merchantName)}</span></div>
       <div><b>${f(t.amount)}</b> <span class="chip ${t.status}">${LABEL[t.status]}</span></div></div>
-    <div class="muted">${esc(t.rule)}</div>
-    <div class="muted">Agent's reason: ${esc(t.reason) || 'none given'}${t.payoutBatchId ? ` &middot; PayPal payout batch ${esc(t.payoutBatchId)} (${esc(t.payoutStatus)})` : ''} &middot; ${new Date(t.at).toLocaleTimeString()}</div>
+    <div class="muted">${esc(t.rule)}${t.outcome ? ' ' + esc(t.outcome) : ''}</div>
+    <div class="muted">Agent's reason: ${esc(t.reason) || 'none given'}${t.payoutBatchId ? ` &middot; PayPal batch ${esc(t.payoutBatchId)}${t.transactionStatus ? `, payment ${esc(t.transactionStatus)}` : ''}${t.transactionId ? `, transaction ${esc(t.transactionId)}` : ''}` : ''} &middot; ${new Date(t.at).toLocaleTimeString()}</div>
     ${t.status === 'pending_approval' ? `<div class="row tight" style="margin-top:8px"><button class="primary small" onclick="act(this, () => api('POST','/api/purchases/${t.id}/approve'))">Approve and pay</button><button class="small" onclick="act(this, () => api('POST','/api/purchases/${t.id}/reject'))">Reject</button></div>` : ''}</div>`).join('')
     || '<p class="muted">No purchase requests yet. Run the agent to see the wallet make decisions.</p>';
   const run = S.runs[0];

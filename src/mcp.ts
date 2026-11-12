@@ -23,14 +23,14 @@ server.tool('check_budget', 'See the spending limits and how much of today\'s bu
 server.tool('browse_catalog', 'List items for sale in the demo marketplace, with merchant and price.', {}, () => wallet('GET', '/agent/catalog'));
 server.tool(
   'request_purchase',
-  'Ask the wallet to buy a catalogue item through PayPal. The wallet charges the catalogue price and decides: paid, blocked, or pending_approval (the owner must approve).',
+  'Ask the wallet to buy a catalogue item through PayPal. The wallet charges the catalogue price and replies with a status: paid (PayPal confirmed the merchant received it), processing (sent but not confirmed yet; not paid), returned (undeliverable; money went back to the owner), failed (PayPal did not complete it), blocked (refused by the rules), or pending_approval (the owner must approve). Do not retry returned or failed payments; report them.',
   {
     sku: z.string().describe('The sku of the item, from browse_catalog'),
     reason: z.string().describe('Why this purchase serves the task; shown to the owner'),
   },
   (args) => wallet('POST', '/agent/purchases', args),
 );
-server.tool('get_purchase_status', 'Check an earlier purchase request, for example one that was waiting for approval.', { id: z.string() }, ({ id }) => wallet('GET', `/agent/purchases/${encodeURIComponent(id)}`));
+server.tool('get_purchase_status', 'Check the latest status of an earlier purchase request, for example one waiting for approval or a payment still processing at PayPal.', { id: z.string() }, ({ id }) => wallet('GET', `/agent/purchases/${encodeURIComponent(id)}`));
 server.tool('list_purchases', 'List the most recent purchase requests and their outcomes.', {}, () => wallet('GET', '/agent/purchases'));
 
 await server.connect(new StdioServerTransport());
